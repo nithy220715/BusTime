@@ -1,12 +1,108 @@
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bus Time</title><link rel="manifest" href="manifest.json"></head>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bus Time</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Noto Sans',sans-serif;padding:16px}
+    table{border-collapse:collapse;margin-top:12px;width:100%}
+    th,td{border:1px solid #ddd;padding:8px;text-align:left}
+    th{background:#f6f6f6}
+    .error{color:#b00020}
+  </style>
+</head>
 <body>
-<h1>🚌 Bus Time / பஸ் நேரம்</h1>
-<p>PWA starter project. Replace data with your Google Sheet sync.</p>
-<script>
-const buses=[{direction:'South',time:'21:20',busNo:'16A',destination:'Gobi'}];
-document.body.innerHTML += '<pre>'+JSON.stringify(buses,null,2)+'</pre>';
-if('serviceWorker' in navigator){navigator.serviceWorker.register('service-worker.js');}
-</script>
-</body></html>
+  <h1>🚌 Bus Time / பஸ் நேரம்</h1>
+  <p id="desc">PWA starter project. Replace data with your Google Sheet sync.</p>
+
+  <div id="output">Loading bus data…</div>
+
+  <script>
+  // Spreadsheet settings — update the ID or sheet name if needed
+  const SPREADSHEET_ID = '1drRxVjXGEaYAiIzPGx6LHE0SW0fngYXdi6FmrRAq5lo';
+  const SHEET_NAME = ''; // optional: set to a sheet name like 'Sheet1'. Leave empty to use the first sheet.
+
+  const output = document.getElementById('output');
+
+  function showError(msg){ output.innerHTML = '<div class="error">'+msg+'</div>'; }
+
+  function renderTable(rows){
+    if(!rows || !rows.length){ output.innerHTML = '<div>No rows found in the sheet.</div>'; return; }
+    // Build table
+    const cols = Object.keys(rows[0]);
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const trh = document.createElement('tr');
+    cols.forEach(c=>{ const th = document.createElement('th'); th.textContent = c; trh.appendChild(th); });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      cols.forEach(c=>{ const td = document.createElement('td'); td.textContent = (r[c] != null ? r[c] : ''); tr.appendChild(td); });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    output.innerHTML = '';
+    output.appendChild(table);
+  }
+
+  // Try Google Visualization API endpoint which works for publicly shared or published sheets
+  function fetchFromGviz(id, sheet){
+    const sheetParam = sheet ? '&sheet='+encodeURIComponent(sheet) : '';
+    const url = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json${sheetParam}`;
+    return fetch(url).then(r=>r.text()).then(text=>{
+      // Response is JS: google.visualization.Query.setResponse(...);
+      const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
+      if(!m){ throw new Error('Unexpected GViz response format'); }
+      const json = JSON.parse(m[1]);
+      const cols = json.table.cols.map(c => (c.label || c.id || '').trim());
+      const rows = json.table.rows.map(r => {
+        const obj = {};
+        (r.c || []).forEach((cell, i) => { obj[cols[i] || `col${i}`] = cell ? cell.v : ''; });
+        return obj;
+      });
+      return rows;
+    });
+  }
+
+  // Fallback: try CSV export (works if the sheet is published or viewable)
+  function fetchCsv(id, gid){
+    const g = gid ? '&gid='+gid : '';
+    const url = `https://docs.google.com/spreadsheets/d/${id}/export?format=csv${g}`;
+    return fetch(url).then(r=>r.text()).then(text=>{
+      const lines = text.trim().split('\n').map(l=>l.split(/,(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)/));
+      const headers = lines.shift().map(h=>h.replace(/^\"|\"$/g,''));
+      return lines.map(cols=>{
+        const obj = {};
+        headers.forEach((h,i)=> obj[h] = (cols[i] || '').replace(/^\"|\"$/g,''));
+        return obj;
+      });
+    });
+  }
+
+  (async function load(){
+    try{
+      // Attempt GViz first
+      const rows = await fetchFromGviz(SPREADSHEET_ID, SHEET_NAME || undefined);
+      renderTable(rows);
+      document.getElementById('desc').textContent = 'Data loaded from Google Sheet ID: '+SPREADSHEET_ID + (SHEET_NAME ? ' (sheet: '+SHEET_NAME+')' : '');
+    }catch(err){
+      console.warn('GViz failed, trying CSV fallback', err);
+      try{
+        const rows = await fetchCsv(SPREADSHEET_ID);
+        renderTable(rows);
+        document.getElementById('desc').textContent = 'Data loaded from Google Sheet (CSV) ID: '+SPREADSHEET_ID;
+      }catch(err2){
+        console.error(err2);
+        showError('Could not load the Google Sheet. Make sure the sheet is published or shared publicly ("Anyone with the link can view" or use "Publish to web"). Error: '+err2.message);
+      }
+    }
+  })();
+
+  if('serviceWorker' in navigator){ navigator.serviceWorker.register('service-worker.js').catch(()=>{}); }
+  </script>
+</body>
+</html>
