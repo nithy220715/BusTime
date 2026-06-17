@@ -49,8 +49,8 @@
     const keys = Object.keys(rows[0]);
     const wanted = [
       {names:['direction','dir'], label:'Direction'},
-      {names:['time','departuretime','departtime','departure','bus time','t'], label:'Time'},
-      {names:['busno','busno.','busno','bus','busnumber','busno'], label:'Bus No'},
+      {names:['time','departuretime','departtime','departure','bustime','t'], label:'Time'},
+      {names:['busno','busno.','bus','busnumber','busno'], label:'Bus No'},
       {names:['destination','dest'], label:'Destination'}
     ];
     const picked = [];
@@ -65,12 +65,11 @@
     });
     // If not found by common names, try to heuristically pick columns by position/names
     if(picked.length===0){
-      // try common header matches (case-insensitive containing)
       keys.forEach(k=>{
         const lk = k.toLowerCase();
         if(lk.includes('time') && !picked.some(p=>p.label==='Time')) picked.push({key:k,label:'Time'});
         if(lk.includes('direction') && !picked.some(p=>p.label==='Direction')) picked.push({key:k,label:'Direction'});
-        if((lk.includes('bus')||lk.includes('busno')||lk.includes('busno')) && !picked.some(p=>p.label==='Bus No')) picked.push({key:k,label:'Bus No'});
+        if((lk.includes('bus')||lk.includes('busno')) && !picked.some(p=>p.label==='Bus No')) picked.push({key:k,label:'Bus No'});
         if(lk.includes('dest') && !picked.some(p=>p.label==='Destination')) picked.push({key:k,label:'Destination'});
       });
     }
@@ -81,11 +80,12 @@
     return picked;
   }
 
+  // Parse a time string into a Date for TODAY using 24-hour interpretation by default.
+  // Supports: HH:MM, HH:MM:SS, or with AM/PM (will be converted).
   function parseTimeToDate(timeStr){
     if(!timeStr) return null;
-    // Accept formats like HH:MM, H:MM AM/PM, HH:MM:SS
-    const t = timeStr.trim();
-    // Try HH:MM(:SS)? with optional AM/PM
+    const t = timeStr.toString().trim();
+    // Match HH:MM(:SS)? optional AM/PM
     const m = t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm|AM|PM)?$/);
     if(!m) return null;
     let hh = parseInt(m[1],10);
@@ -97,10 +97,11 @@
       if(a==='pm' && hh<12) hh+=12;
       if(a==='am' && hh===12) hh = 0;
     }
+    // Treat hour as 0-23 (24 -> 0)
+    if(hh===24) hh = 0;
     const now = new Date();
+    // Create date for TODAY at the parsed time
     const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, ss);
-    // If the parsed time is before now, assume next day (buses later past midnight)
-    if(d.getTime() < now.getTime() - 1000){ d.setDate(d.getDate()+1); }
     return d;
   }
 
@@ -110,16 +111,15 @@
     return Math.max(0, Math.round((date.getTime() - now.getTime())/60000));
   }
 
-  function renderTable(rows){
+  function renderTable(rows, originalCount){
     latestRows = rows || [];
-    if(!rows || !rows.length){ output.innerHTML = '<div>No rows found in the sheet.</div>'; return; }
+    if(!rows || !rows.length){ output.innerHTML = '<div>No upcoming rows found in the sheet.</div>'; return; }
     const picked = pickColumns(rows);
     // Build table
     const table = document.createElement('table');
     const thead = document.createElement('thead');
     const trh = document.createElement('tr');
     picked.forEach(c=>{ const th = document.createElement('th'); th.textContent = c.label; trh.appendChild(th); });
-    // Add relative time column if we have a Time column
     const timeCol = picked.find(p=>p.label==='Time');
     if(timeCol){ const th = document.createElement('th'); th.textContent = 'In'; trh.appendChild(th); }
     thead.appendChild(trh);
@@ -134,6 +134,17 @@
     table.appendChild(tbody);
     output.innerHTML = '';
     output.appendChild(table);
+    // Show filtered info
+    if(typeof originalCount === 'number'){
+      const info = document.createElement('div');
+      info.className = 'muted';
+      if(originalCount !== rows.length){
+        info.textContent = `Showing ${rows.length} upcoming of ${originalCount} total rows (filtered to upcoming times)`;
+      } else {
+        info.textContent = `Showing ${rows.length} upcoming rows`;
+      }
+      output.insertBefore(info, table);
+    }
   }
 
   // Try Google Visualization API endpoint which works for publicly shared or published sheets
@@ -172,13 +183,46 @@
   async function loadOnce(){
     try{
       const rows = await fetchFromGviz(SPREADSHEET_ID, SHEET_NAME || undefined);
-      renderTable(rows);
+      // Filter to upcoming times using the Time column interpreted as 24-hour by default
+      const picked = pickColumns(rows);
+      const timeCol = picked.find(p=>p.label==='Time');
+      let filtered = rows;
+      if(timeCol){
+        const now = new Date();
+        filtered = rows.filter(r => {
+          const dt = parseTimeToDate(r[timeCol.key]);
+          return dt && dt.getTime() >= now.getTime() - 1000; // upcoming or now
+        });
+        // Sort by upcoming time ascending
+        filtered.sort((a,b)=>{
+          const da = parseTimeToDate(a[timeCol.key]);
+          const db = parseTimeToDate(b[timeCol.key]);
+          return (da?da.getTime():Infinity) - (db?db.getTime():Infinity);
+        });
+      }
+      renderTable(filtered, rows.length);
       document.getElementById('desc').textContent = 'Data loaded from Google Sheet ID: '+SPREADSHEET_ID + (SHEET_NAME ? ' (sheet: '+SHEET_NAME+')' : '');
     }catch(err){
       console.warn('GViz failed, trying CSV fallback', err);
       try{
         const rows = await fetchCsv(SPREADSHEET_ID);
-        renderTable(rows);
+        // same filtering as above
+        const picked = pickColumns(rows);
+        const timeCol = picked.find(p=>p.label==='Time');
+        let filtered = rows;
+        if(timeCol){
+          const now = new Date();
+          filtered = rows.filter(r => {
+            const dt = parseTimeToDate(r[timeCol.key]);
+            return dt && dt.getTime() >= now.getTime() - 1000;
+          });
+          filtered.sort((a,b)=>{
+            const da = parseTimeToDate(a[timeCol.key]);
+            const db = parseTimeToDate(b[timeCol.key]);
+            return (da?da.getTime():Infinity) - (db?db.getTime():Infinity);
+          });
+        }
+        renderTable(filtered, rows.length);
         document.getElementById('desc').textContent = 'Data loaded from Google Sheet (CSV) ID: '+SPREADSHEET_ID;
       }catch(err2){
         console.error(err2);
