@@ -7,41 +7,128 @@
   <link rel="manifest" href="manifest.json">
   <style>
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Noto Sans',sans-serif;padding:16px}
+    .top{display:flex;align-items:center;gap:16px}
+    .clock{font-weight:600}
     table{border-collapse:collapse;margin-top:12px;width:100%}
     th,td{border:1px solid #ddd;padding:8px;text-align:left}
     th{background:#f6f6f6}
     .error{color:#b00020}
+    .muted{color:#666;font-size:0.9em}
   </style>
 </head>
 <body>
-  <h1>🚌 Bus Time / பஸ் நேரம்</h1>
+  <div class="top">
+    <h1>🚌 Bus Time / பஸ் நேரம்</h1>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
   <p id="desc">PWA starter project. Replace data with your Google Sheet sync.</p>
 
   <div id="output">Loading bus data…</div>
+  <div class="muted">Auto-refresh interval: <span id="interval">60</span>s</div>
 
   <script>
   // Spreadsheet settings — update the ID or sheet name if needed
   const SPREADSHEET_ID = '1drRxVjXGEaYAiIzPGx6LHE0SW0fngYXdi6FmrRAq5lo';
   const SHEET_NAME = ''; // optional: set to a sheet name like 'Sheet1'. Leave empty to use the first sheet.
 
+  // Auto-refresh settings (seconds)
+  const REFRESH_INTERVAL_S = 60; // change this value to preferred interval
+  document.getElementById('interval').textContent = REFRESH_INTERVAL_S;
+  const REFRESH_INTERVAL_MS = REFRESH_INTERVAL_S * 1000;
+
   const output = document.getElementById('output');
+  let latestRows = [];
 
   function showError(msg){ output.innerHTML = '<div class="error">'+msg+'</div>'; }
 
+  function normalizeKey(k){ return (k||'').toString().trim().toLowerCase().replace(/\s+/g,'').replace(/[^a-z0-9]/g,''); }
+
+  // Determine which columns to display and their canonical keys
+  function pickColumns(rows){
+    if(!rows || !rows.length) return [];
+    const keys = Object.keys(rows[0]);
+    const wanted = [
+      {names:['direction','dir'], label:'Direction'},
+      {names:['time','departuretime','departtime','departure','bus time','t'], label:'Time'},
+      {names:['busno','busno.','busno','bus','busnumber','busno'], label:'Bus No'},
+      {names:['destination','dest'], label:'Destination'}
+    ];
+    const picked = [];
+    keys.forEach(k=>{
+      const nk = normalizeKey(k);
+      for(const w of wanted){
+        if(w.names.includes(nk) && !picked.find(p=>p.key===k)){
+          picked.push({key:k,label:w.label});
+          break;
+        }
+      }
+    });
+    // If not found by common names, try to heuristically pick columns by position/names
+    if(picked.length===0){
+      // try common header matches (case-insensitive containing)
+      keys.forEach(k=>{
+        const lk = k.toLowerCase();
+        if(lk.includes('time') && !picked.some(p=>p.label==='Time')) picked.push({key:k,label:'Time'});
+        if(lk.includes('direction') && !picked.some(p=>p.label==='Direction')) picked.push({key:k,label:'Direction'});
+        if((lk.includes('bus')||lk.includes('busno')||lk.includes('busno')) && !picked.some(p=>p.label==='Bus No')) picked.push({key:k,label:'Bus No'});
+        if(lk.includes('dest') && !picked.some(p=>p.label==='Destination')) picked.push({key:k,label:'Destination'});
+      });
+    }
+    // As a last resort, take up to first 4 columns
+    if(picked.length===0){
+      keys.slice(0,4).forEach((k,i)=> picked.push({key:k,label:k}));
+    }
+    return picked;
+  }
+
+  function parseTimeToDate(timeStr){
+    if(!timeStr) return null;
+    // Accept formats like HH:MM, H:MM AM/PM, HH:MM:SS
+    const t = timeStr.trim();
+    // Try HH:MM(:SS)? with optional AM/PM
+    const m = t.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm|AM|PM)?$/);
+    if(!m) return null;
+    let hh = parseInt(m[1],10);
+    const mm = parseInt(m[2],10);
+    const ss = m[3] ? parseInt(m[3],10) : 0;
+    const ampm = m[4];
+    if(ampm){
+      const a = ampm.toLowerCase();
+      if(a==='pm' && hh<12) hh+=12;
+      if(a==='am' && hh===12) hh = 0;
+    }
+    const now = new Date();
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, ss);
+    // If the parsed time is before now, assume next day (buses later past midnight)
+    if(d.getTime() < now.getTime() - 1000){ d.setDate(d.getDate()+1); }
+    return d;
+  }
+
+  function minutesUntil(date){
+    const now = new Date();
+    if(!date) return null;
+    return Math.max(0, Math.round((date.getTime() - now.getTime())/60000));
+  }
+
   function renderTable(rows){
+    latestRows = rows || [];
     if(!rows || !rows.length){ output.innerHTML = '<div>No rows found in the sheet.</div>'; return; }
+    const picked = pickColumns(rows);
     // Build table
-    const cols = Object.keys(rows[0]);
     const table = document.createElement('table');
     const thead = document.createElement('thead');
     const trh = document.createElement('tr');
-    cols.forEach(c=>{ const th = document.createElement('th'); th.textContent = c; trh.appendChild(th); });
+    picked.forEach(c=>{ const th = document.createElement('th'); th.textContent = c.label; trh.appendChild(th); });
+    // Add relative time column if we have a Time column
+    const timeCol = picked.find(p=>p.label==='Time');
+    if(timeCol){ const th = document.createElement('th'); th.textContent = 'In'; trh.appendChild(th); }
     thead.appendChild(trh);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
     rows.forEach(r=>{
       const tr = document.createElement('tr');
-      cols.forEach(c=>{ const td = document.createElement('td'); td.textContent = (r[c] != null ? r[c] : ''); tr.appendChild(td); });
+      picked.forEach(c=>{ const td = document.createElement('td'); td.textContent = (r[c.key] != null ? r[c.key] : ''); tr.appendChild(td); });
+      if(timeCol){ const td = document.createElement('td'); const dt = parseTimeToDate(r[timeCol.key]); const mins = minutesUntil(dt); td.textContent = (mins==null? '': (mins===0? 'Now': mins+' min')); tr.appendChild(td); }
       tbody.appendChild(tr);
     });
     table.appendChild(tbody);
@@ -54,7 +141,6 @@
     const sheetParam = sheet ? '&sheet='+encodeURIComponent(sheet) : '';
     const url = `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:json${sheetParam}`;
     return fetch(url).then(r=>r.text()).then(text=>{
-      // Response is JS: google.visualization.Query.setResponse(...);
       const m = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\);?/);
       if(!m){ throw new Error('Unexpected GViz response format'); }
       const json = JSON.parse(m[1]);
@@ -83,9 +169,8 @@
     });
   }
 
-  (async function load(){
+  async function loadOnce(){
     try{
-      // Attempt GViz first
       const rows = await fetchFromGviz(SPREADSHEET_ID, SHEET_NAME || undefined);
       renderTable(rows);
       document.getElementById('desc').textContent = 'Data loaded from Google Sheet ID: '+SPREADSHEET_ID + (SHEET_NAME ? ' (sheet: '+SHEET_NAME+')' : '');
@@ -100,7 +185,42 @@
         showError('Could not load the Google Sheet. Make sure the sheet is published or shared publicly ("Anyone with the link can view" or use "Publish to web"). Error: '+err2.message);
       }
     }
-  })();
+  }
+
+  // Initial load
+  loadOnce();
+  // Auto-refresh loop
+  setInterval(()=>{ loadOnce(); }, REFRESH_INTERVAL_MS);
+
+  // Live clock using system time
+  function updateClock(){
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2,'0');
+    const mm = String(now.getMinutes()).padStart(2,'0');
+    const ss = String(now.getSeconds()).padStart(2,'0');
+    document.getElementById('clock').textContent = hh+':'+mm+':'+ss;
+    // Also update the 'In' column values live using latestRows
+    const table = output.querySelector('table');
+    if(table){
+      const picked = pickColumns(latestRows);
+      const timeCol = picked.find(p=>p.label==='Time');
+      if(timeCol){
+        const tbody = table.tBodies[0];
+        if(tbody){
+          for(let i=0;i<tbody.rows.length;i++){
+            const r = latestRows[i];
+            const dt = parseTimeToDate(r[timeCol.key]);
+            const mins = minutesUntil(dt);
+            const cellIndex = picked.length; // the 'In' column is after picked columns
+            const td = tbody.rows[i].cells[cellIndex];
+            if(td) td.textContent = (mins==null? '': (mins===0? 'Now': mins+' min'));
+          }
+        }
+      }
+    }
+  }
+  updateClock();
+  setInterval(updateClock,1000);
 
   if('serviceWorker' in navigator){ navigator.serviceWorker.register('service-worker.js').catch(()=>{}); }
   </script>
