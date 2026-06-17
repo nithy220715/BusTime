@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bus Time</title><link rel="manifest" href="manifest.json"></head>
+<body>
+<h1>🚌 Bus Time / பஸ் நேரம்</h1>
+<p>PWA starter project. Replace data with your Google Sheet sync.</p>
+<script>
+const buses=[{direction:'South',time:'21:20',busNo:'16A',destination:'Gobi'}];
+document.body.innerHTML += '<pre>'+JSON.stringify(buses,null,2)+'</pre>';
+if('serviceWorker' in navigator){navigator.serviceWorker.register('service-worker.js');}
+</script>
+</body></html>

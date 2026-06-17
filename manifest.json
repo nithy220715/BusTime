@@ -1,0 +1,6 @@
+{
+"name":"Bus Time",
+"short_name":"BusTime",
+"display":"standalone",
+"start_url":"./"
+}
